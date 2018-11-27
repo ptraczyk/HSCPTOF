@@ -225,7 +225,7 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
 //    if (muon::isHighPtMuon(*imuon, pvertex )) 
 //      if (imuon->tunePMuonBestTrack()->pt()>maxpt) 
 //        maxpt=imuon->tunePMuonBestTrack()->pt();
-    maxpt=imuon->pt();
+    if (imuon->pt()>maxpt) maxpt=imuon->pt();
       
     // check for back-to-back dimuons
     if (muonC.size()>1) {
@@ -329,7 +329,7 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
         l1t::MuonRef l1muon(muColl, distance(muColl->begin(muColl->getFirstBX()),it) );
         double deta=fabs(l1muon->eta()-eta);
         double dphi=fabs(reco::deltaPhi(l1muon->phi(),phi));
-        double dr=sqrt(deta*deta+dphi*dphi);
+//        double dr=sqrt(deta*deta+dphi*dphi);
         
         // insert a protection against cross-matching L1 candidates for close-by muons
         // If the L1 candidate dR w.r.t. a different Loose muon is smaller then don't look at the candidate here
@@ -338,16 +338,18 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
           if (iimuon!=imuon && iimuon->pt()>thePtCut && muon::isLooseMuon(*iimuon)) {
             double deta2=fabs(l1muon->eta()-iimuon->tunePMuonBestTrack()->eta());
             double dphi2=fabs(reco::deltaPhi(l1muon->phi(),iimuon->tunePMuonBestTrack()->phi()));
-            double dr2=sqrt(deta2*deta2+dphi2*dphi2);
-            if (dr2<dr) {
-              dr=1.;
+//            double dr2=sqrt(deta2*deta2+dphi2*dphi2);
+            if (deta2<deta && dphi2<dphi) {
+              deta=1.;
+              dphi=1.;
               break;
             }
           }
         }
 
-        // any L1 match falling inside the 0.2 cone is saved
-        if (dr<0.2) {
+        // any L1 match falling inside the cone is saved
+        // NEW: tight matching in phi and loose in eta
+        if (dphi<0.05 && deta<0.4) {
           hasL1=1;
           l1Pt[l1idx]=l1muon->pt();
           l1Eta[l1idx]=l1muon->eta();
@@ -399,7 +401,6 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
 
           if (matched==true) {
             hasSim=1;
-//            cout << " MATCH!" << endl;
             genPt=iTrack.p4().Pt();
             genEta=iTrack.p4().Eta();
             genPhi=iTrack.p4().Phi();
