@@ -73,6 +73,7 @@
 #include "SimDataFormats/CrossingFrame/interface/MixCollection.h"
 #include "SimDataFormats/TrackingAnalysis/interface/TrackingParticle.h"
 #include "SimDataFormats/TrackingAnalysis/interface/TrackingVertexContainer.h"
+#include "SimDataFormats/GeneratorProducts/interface/GenEventInfoProduct.h"
 
 #include "DataFormats/L1Trigger/interface/L1MuonParticle.h"
 
@@ -85,6 +86,8 @@
 #include <TStyle.h>
 #include <TCanvas.h>
 #include <TFrame.h>
+
+using namespace muon;
 
 //
 // constructors and destructor
@@ -137,6 +140,33 @@ MuonNtupleFiller::~MuonNtupleFiller()
 // member functions
 //
 
+
+bool isNewHighPtMuon(const reco::Muon& muon, const reco::Vertex& vtx){
+  if(!muon.isGlobalMuon()) return false;
+  
+  bool muValHits = ( muon.globalTrack()->hitPattern().numberOfValidMuonHits()>0 ||
+                         muon.tunePMuonBestTrack()->hitPattern().numberOfValidMuonHits()>0 );
+  bool muMatchedSt = muon.numberOfMatchedStations()>1;
+  if(!muMatchedSt) {
+    if( muon.numberOfMatchedStations()==1 && muon.isTrackerMuon() && (
+        muon.expectedNnumberOfMatchedStations()<2 ||      // for cracks (ExpectedMSC)
+        !(muon.stationMask()==1 || muon.stationMask()==16) ||    // for segment reco fail (ZprimeMSC)
+        muon.numberOfMatchedRPCLayers()>2) )              // for 1st stations (ZprimeMSC)
+      muMatchedSt = true;
+  }
+
+  bool ptErr = muon.tunePMuonBestTrack()->ptError()/muon.tunePMuonBestTrack()->pt() < 0.3;
+
+  bool muID = muValHits && muMatchedSt;
+  bool hits = muon.innerTrack()->hitPattern().trackerLayersWithMeasurement() > 5 && muon.innerTrack()->hitPattern().numberOfValidPixelHits() > 0; 
+//  bool momQuality = muon.tunePMuonBestTrack()->ptError()/muon.tunePMuonBestTrack()->pt() < 0.3;
+  bool ip = fabs(muon.innerTrack()->dxy(vtx.position())) < 0.2 && fabs(muon.innerTrack()->dz(vtx.position())) < 0.5;
+
+//  return muID && hits && momQuality && ip;
+  return muID && hits && ip && ptErr;
+}
+
+
 // ------------ method called to for each event  ------------
 void
 MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetup)
@@ -154,17 +184,27 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
   if (debug_)
     cout << endl << " Event: " << iEvent.id() << "  Orbit: " << iEvent.orbitNumber() << "  BX: " << iEvent.bunchCrossing() << endl;
 
+  weight = 1.;
+  if( !iEvent.isRealData() ) {
+    //---- Generator weights
+    edm::Handle<GenEventInfoProduct> gen_ev_info;
+    iEvent.getByLabel(edm::InputTag("generator"), gen_ev_info);
+    if (gen_ev_info.isValid()) weight = gen_ev_info->weight();
+  }
+
+  // count the vertices in the event and store the parameters of the PV
   reco::Vertex::Point posVtx;
   reco::Vertex::Error errVtx;
   edm::Handle<reco::VertexCollection> recVtxs;
   iEvent.getByToken(vertexToken_,recVtxs);
-  unsigned int theIndexOfThePrimaryVertex = 999.;
-  for (unsigned int ind=0; ind<recVtxs->size(); ++ind) {
-    if ( (*recVtxs)[ind].isValid() ) {
-      theIndexOfThePrimaryVertex = ind;
-      break;
+  unsigned int theIndexOfThePrimaryVertex = 999;
+  n_vtx=0;
+  for (unsigned int ind=0; ind<recVtxs->size(); ++ind) 
+    if ( (*recVtxs)[ind].isValid()) {
+      if (theIndexOfThePrimaryVertex == 999) theIndexOfThePrimaryVertex = ind;
+      n_vtx++;
     }
-  }
+
   if (theIndexOfThePrimaryVertex<100) {
     posVtx = ((*recVtxs)[theIndexOfThePrimaryVertex]).position();
     errVtx = ((*recVtxs)[theIndexOfThePrimaryVertex]).error();
@@ -225,7 +265,7 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
 //    if (muon::isHighPtMuon(*imuon, pvertex )) 
 //      if (imuon->tunePMuonBestTrack()->pt()>maxpt) 
 //        maxpt=imuon->tunePMuonBestTrack()->pt();
-    if (imuon->pt()>maxpt) maxpt=imuon->pt();
+    if (imuon->pt()>maxpt && muon::isLooseMuon(*imuon)) maxpt=imuon->pt();
       
     // check for back-to-back dimuons
     if (muonC.size()>1) {
@@ -286,9 +326,8 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     isSTA = staTrack.isNonnull();
     isGLB = glbTrack.isNonnull();
     isLoose = muon::isLooseMuon(*imuon);
-    isTight = muon::isHighPtMuon(*imuon, pvertex );
-    isPF = imuon->isPFMuon();
-
+    isTight = isNewHighPtMuon(*imuon, pvertex );
+    
     // fill muon kinematics
     pt = imuon->tunePMuonBestTrack()->pt();
     glbpt=pt;
@@ -301,22 +340,18 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     dz = imuon->tunePMuonBestTrack()->dz(pvertex.position());
     tkiso=imuon->isolationR03().sumPt/pt;
 
-    vector<int> rpchits={0,0,0,0};
-    vector<int> count_segments={0,0,0,0};
-    vector<int> count_matches={0,0,0,0};
+    // remove some junk, the files are getting too big
+    if (!isSTA) continue;
+    if (pt < 5) continue;
+
+//    vector<int> rpchits={0,0,0,0};
+    vector<int> segments_all={0,0,0,0};
     if (isSTA) {
-      rpchits=countRPChits(staTrack,iEvent);
-      count_segments=countDThits(staTrack,iEvent);
-      vector<int> count_csc={0,0,0,0};
-      count_csc=countCSChits(staTrack,iEvent);
-      for (int i=0;i<4;i++)
-        count_segments[i]+=count_csc[i];
-      
-      for (const auto &ch : imuon->matches()) {
-        int nsegs=ch.segmentMatches.size();
-        if (nsegs>count_matches[ch.station()-1]) count_matches[ch.station()-1]=nsegs;
-      }
-      
+      vector<int> segments_csc={0,0,0,0};
+      segments_all=countDTsegs(iEvent,muonR);
+      segments_csc=countCSCsegs(iEvent,muonR);
+      for (int i=0;i<4;i++) 
+        segments_all[i]+=segments_csc[i];
     }
     
 //    double detaphi=999;
@@ -379,9 +414,7 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
     // read muon shower information
     for (int i=0; i<4; i++) { // Loop on stations
       nhits[i]  = (muonShowerInformation.nStationHits).at(i);        // number of all the muon RecHits per chamber crossed by a track (1D hits)
-      nrpchits[i] = rpchits.at(i);                                   // number of RPC hits in a 0.15 cone around the track
-      nsegs[i] = count_segments.at(i);
-      nmatches[i] = count_matches.at(i);
+      nsegs[i] = segments_all.at(i);
     }
 
     bool matched=false;
@@ -449,14 +482,14 @@ MuonNtupleFiller::beginJob()
 
    t = new TTree("MuTree", "MuTree");
    t->Branch("hasSim", &hasSim, "hasSim/O");
-   t->Branch("genCharge", &genCharge, "genCharge/I");
-   t->Branch("genPt", &genPt, "genPt/F");
-   t->Branch("genPhi", &genPhi, "genPhi/F");
-   t->Branch("genEta", &genEta, "genEta/F");
-   t->Branch("genBX", &genBX, "genBX/I");
+//   t->Branch("genCharge", &genCharge, "genCharge/I");
+//   t->Branch("genPt", &genPt, "genPt/F");
+//   t->Branch("genPhi", &genPhi, "genPhi/F");
+//   t->Branch("genEta", &genEta, "genEta/F");
+//   t->Branch("genBX", &genBX, "genBX/I");
 
    t->Branch("hasL1", &hasL1, "hasL1/O");
-   t->Branch("l1Qual", &l1Qual, "l1Qual[10]/I");
+//   t->Branch("l1Qual", &l1Qual, "l1Qual[10]/I");
    t->Branch("l1Pt", &l1Pt, "l1Pt[10]/F");
    t->Branch("l1Phi", &l1Phi, "l1Phi[10]/F");
    t->Branch("l1Eta", &l1Eta, "l1Eta[10]/F");
@@ -465,10 +498,11 @@ MuonNtupleFiller::beginJob()
    t->Branch("event_run", &event_run, "event_run/i");
    t->Branch("event_lumi", &event_lumi, "event_lumi/i");
    t->Branch("event_event", &event_event, "event_event/i");
+   t->Branch("nVtx", &n_vtx, "n_vtx/i");
+//   t->Branch("weight", &weight, "weight/F");
    t->Branch("isCosmic", &isCosmic, "isCosmic/O");
    t->Branch("isCollision", &isCollision, "isCollision/O");
 
-   t->Branch("isPF", &isPF, "isPF/O");
    t->Branch("isSTA", &isSTA, "isSTA/O");
    t->Branch("isGLB", &isGLB, "isGLB/O");
    t->Branch("isLoose", &isLoose, "isLoose/O");
@@ -480,26 +514,25 @@ MuonNtupleFiller::beginJob()
    t->Branch("phi", &phi, "phi/F");
    t->Branch("eta", &eta, "eta/F");
    t->Branch("dPt", &dPt, "dPt/F");
-   t->Branch("dz", &dz, "dz/F");
-   t->Branch("dxy", &dxy, "dxy/F");
+//   t->Branch("dz", &dz, "dz/F");
+//   t->Branch("dxy", &dxy, "dxy/F");
    t->Branch("tkiso", &tkiso, "tkiso/F");
 
    t->Branch("nhits", &nhits, "nhits[4]/I");
-   t->Branch("nrpchits", &nrpchits, "nrpchits[4]/I");
+//   t->Branch("nrpchits", &nrpchits, "nrpchits[4]/I");
    t->Branch("nsegs", &nsegs, "nsegs[4]/I");
-   t->Branch("nmatches", &nmatches, "nmatches[4]/I");
+//   t->Branch("nmatches", &nmatches, "nmatches[4]/I");
 
-   t->Branch("muNdof", &muNdof, "muNdof/I");
-   t->Branch("muTime", &muTime, "muTime/F");
-   t->Branch("muTimeErr", &muTimeErr, "muTimeErr/F");
+//   t->Branch("muNdof", &muNdof, "muNdof/I");
+//   t->Branch("muTime", &muTime, "muTime/F");
+//   t->Branch("muTimeErr", &muTimeErr, "muTimeErr/F");
    t->Branch("dtNdof", &dtNdof, "dtNdof/I");
    t->Branch("dtTime", &dtTime, "dtTime/F");
-   t->Branch("cscNdof", &cscNdof, "cscNdof/I");
-   t->Branch("cscTime", &cscTime, "cscTime/F");
+//   t->Branch("cscNdof", &cscNdof, "cscNdof/I");
+//   t->Branch("cscTime", &cscTime, "cscTime/F");
    t->Branch("rpcNdof", &rpcNdof, "rpcNdof/I");
    t->Branch("rpcTime", &rpcTime, "rpcTime/F");
    t->Branch("rpcTimeErr", &rpcTimeErr, "rpcTimeErr/F");
-
 }
 
 // ------------ method called once each job just after ending the event loop  ------------
@@ -564,116 +597,125 @@ vector<int> MuonNtupleFiller::countRPChits(reco::TrackRef muon, const edm::Event
 }
 
 
-vector<int> MuonNtupleFiller::countDThits(reco::TrackRef muon, const edm::Event& iEvent) {
-  double DTCut = 30.;
 
-  vector<int> stations={0,0,0,0};
+vector<int> MuonNtupleFiller::countDTsegs(const edm::Event& iEvent, reco::MuonRef muon) {
+  double DTCut = 25.;
 
-  edm::Handle<DTRecSegment4DCollection> dtRecHits;
-  iEvent.getByToken(dtSegmentToken_, dtRecHits);
-  
-  if (debug_) cout << endl << " *** DT Segment search" << endl;
+  std::vector<int> stations={0,0,0,0};
 
-  // Loop over muon recHits
-  for(trackingRecHit_iterator muonHit = muon->recHitsBegin(); muonHit != muon->recHitsEnd(); ++muonHit) {
-    if ( (*muonHit)->geographicalId().det() != DetId::Muon ) continue; 
-    if ( (*muonHit)->geographicalId().subdetId() != MuonSubdetId::DT ) continue;
+  edm::Handle<DTRecSegment4DCollection> dtSegments;
+  iEvent.getByToken(dtSegmentToken_, dtSegments);
 
-    // Pick the one in the same DT Chamber as the muon AND not in SuperLayer 2 (Theta SL)
-    DetId idT = (*muonHit)->geographicalId();
-    DTChamberId dtDetIdHitT(idT.rawId());
-//    DTSuperLayerId dtDetLayerIdHitT(idT.rawId());
-    LocalPoint posLocalMuon = (*muonHit)->localPosition();
+  for (const auto &ch : muon->matches()) {
+    if( ch.detector() != MuonSubdetId::DT )  continue;
+    DTChamberId DTid( ch.id.rawId() );
 
-    if (debug_) cout << " Station " << dtDetIdHitT.station() << "  Muon hit: " << posLocalMuon << endl;
+    int nsegs_temp = 0;
+    std::vector<float> nsegs_x_temp, nsegs_y_temp;
 
-    vector <float> phi,zed;
-    // loop over vector, if further than ~1cm from each entry and closer than ~60cm from the first one -> add as new entry
-    // number of segments = max(size(phi),size(zed))
-      
-    if (posLocalMuon.x()!=0) phi.push_back(posLocalMuon.x());
-    if (posLocalMuon.y()!=0) zed.push_back(posLocalMuon.y());
+    for (auto seg = dtSegments->begin(); seg!=dtSegments->end(); ++seg) {
+      DTChamberId myChamber((*seg).geographicalId().rawId());
+      if (!(DTid==myChamber))  continue;
+      LocalPoint posLocalSeg = seg->localPosition();
 
-    for (auto rechit = dtRecHits->begin(); rechit!=dtRecHits->end();++rechit) {
-
-      // look for hits in the chamber with a muon hit
-      DTChamberId myChamber((*rechit).geographicalId().rawId());
-      if (!(dtDetIdHitT==myChamber)) continue;
-
-      // Compare local positions of the muon hit and the hit being considered
-      LocalPoint posLocalHit = rechit->localPosition();
-      
-      if (posLocalMuon.x()!=0 && posLocalHit.x()!=0 && (fabs(posLocalMuon.x()-posLocalHit.x())<DTCut)) {
-        int found=0;
-        for (auto found_phi : phi)
-          if (fabs(found_phi-posLocalHit.x())<0.1) {
-            found=1;
+      if( ( posLocalSeg.x()!=0 && ch.x!=0 ) && (fabs(posLocalSeg.x()-ch.x)<DTCut) ) {
+        bool found = false;
+        for( auto prev_x : nsegs_x_temp) {
+          if( fabs(prev_x-posLocalSeg.x()) < 0.1 ) {
+            found = true;
             break;
           }
-        if (!found) phi.push_back(posLocalHit.x());
+        }
+        if( !found )  nsegs_x_temp.push_back(posLocalSeg.x());
       }
 
-      if (posLocalMuon.y()!=0 && posLocalHit.y()!=0 && (fabs(posLocalMuon.y()-posLocalHit.y())<DTCut)) {
-        int found=0;
-        for (auto found_zed : zed)
-          if (fabs(found_zed-posLocalHit.y())<0.1) {
-            found=1;
+      if( ( posLocalSeg.y()!=0 && ch.y!=0 ) && (fabs(posLocalSeg.y()-ch.y)<DTCut) ) {
+        bool found = false;
+        for( auto prev_y : nsegs_y_temp) {
+          if( fabs(prev_y-posLocalSeg.y()) < 0.1 ) {
+            found = true;
             break;
           }
-        if (!found) zed.push_back(posLocalHit.y());
+        }
+        if( !found )  nsegs_y_temp.push_back(posLocalSeg.y());
       }
-      
-      if (debug_) cout << "           Segment: " << posLocalHit << "  found Phi " << phi.size() << "  found Zed " << zed.size() << endl;
-      stations[myChamber.station()-1]=max(phi.size(),zed.size());
+
     }
-  }
 
-  if (debug_) {
-    cout << " DT Shower pattern: ";
-    for (int i=0;i<4;i++) cout << stations[i] << " ";
-    cout << endl;
+    nsegs_temp = (int)std::max(nsegs_x_temp.size(), nsegs_y_temp.size());
+
+    //--- subtract best matched segment from given muon
+    bool isBestMatched = false;
+    for(std::vector<reco::MuonSegmentMatch>::const_iterator matseg = ch.segmentMatches.begin(); matseg != ch.segmentMatches.end(); matseg++) {
+      if( matseg->isMask(reco::MuonSegmentMatch::BestInChamberByDR) ) {
+        isBestMatched = true;
+        break;
+      }
+    }
+
+    if(isBestMatched) nsegs_temp = nsegs_temp-1;
+    if(nsegs_temp>0)  stations[ch.station()-1] += nsegs_temp;
+
   }
 
   return stations;
 }
 
 
-vector<int> MuonNtupleFiller::countCSChits(reco::TrackRef muon, const edm::Event& iEvent) {
-  double CSCCut = 30.;
+vector<int> MuonNtupleFiller::countCSCsegs(const edm::Event& iEvent, reco::MuonRef muon) {
+  double CSCCut = 25.;
 
-  vector<int> stations={0,0,0,0};
+  std::vector<int> stations={0,0,0,0};
 
-  edm::Handle<CSCSegmentCollection> cscRecHits;
-  iEvent.getByToken(cscSegmentToken_, cscRecHits);  
+  edm::Handle<CSCSegmentCollection> cscSegments;
+  iEvent.getByToken(cscSegmentToken_, cscSegments);  
 
-  // Loop over muon recHits
-  for(trackingRecHit_iterator muonHit = muon->recHitsBegin(); muonHit != muon->recHitsEnd(); ++muonHit) {
-    if ( (*muonHit)->geographicalId().det() != DetId::Muon ) continue; 
-    if ( (*muonHit)->geographicalId().subdetId() != MuonSubdetId::CSC ) continue;
+  for (const auto &ch : muon->matches()) {
+    if( ch.detector() != MuonSubdetId::CSC )  continue;
+    CSCDetId CSCid( ch.id.rawId() );
 
-    CSCDetId cscDetIdHitT((*muonHit)->geographicalId());
-    LocalPoint posLocalMuon = (*muonHit)->localPosition();
+    int nsegs_temp = 0;
+    std::vector<float> nsegs_phi_temp;
+    std::vector<float> nsegs_nhit_temp;
 
-    if (debug_) cout << " Muon hit: " << posLocalMuon << endl;
+    for (auto seg = cscSegments->begin(); seg!=cscSegments->end(); ++seg) {
+      CSCDetId myChamber((*seg).geographicalId().rawId());
+      if (!(CSCid==myChamber))  continue;
+      LocalPoint posLocalSeg = seg->localPosition();
 
-    for (auto rechit = cscRecHits->begin(); rechit!=cscRecHits->end();++rechit) {
-
-      // look for hits in the chamber with a muon hit
-      CSCDetId myChamber((*rechit).geographicalId().rawId());
-      if (!(cscDetIdHitT==myChamber)) continue;
-
-      LocalPoint posLocalHit = rechit->localPosition();
-      if (debug_) cout << "          Segment: " << posLocalHit << endl;
-      if ((posLocalMuon-posLocalHit).mag()<CSCCut) stations[myChamber.station()-1]++;
+      if( (posLocalSeg.x()!=0 && posLocalSeg.y()!=0) && (sqrt( (posLocalSeg.x()-ch.x)*(posLocalSeg.x()-ch.x) + (posLocalSeg.y()-ch.y)*(posLocalSeg.y()-ch.y) )<CSCCut) )  { 
+        bool found = false;
+        for( auto prev_phi : nsegs_phi_temp) {
+          if( fabs(prev_phi-posLocalSeg.phi()) < 0.0002 ) {
+            for( auto prev_nhit2 : nsegs_nhit_temp) {
+              if( fabs(prev_nhit2-seg->nRecHits()) < 2 ) {
+                found = true;
+                break;
+              }
+            }
+          }
+        }
+        if( !found ) {
+          nsegs_phi_temp.push_back(posLocalSeg.phi());
+          nsegs_nhit_temp.push_back(seg->nRecHits());
+          nsegs_temp++;
+        }
+      }
     }
+
+    //--- subtract best matched segment from given muon
+    bool isBestMatched = false;
+    for(std::vector<reco::MuonSegmentMatch>::const_iterator matseg = ch.segmentMatches.begin(); matseg != ch.segmentMatches.end(); matseg++) {
+      if( matseg->isMask(reco::MuonSegmentMatch::BestInChamberByDR) ) {
+        isBestMatched = true;
+        break;
+      }
+    }
+
+    if(isBestMatched) nsegs_temp = nsegs_temp-1;
+    if(nsegs_temp>0)  stations[ch.station()-1] += nsegs_temp;
   }
 
-  if (debug_) {
-    cout << " CSC Shower pattern: ";
-    for (int i=0;i<4;i++) cout << stations[i] << " ";
-    cout << endl;
-  }
-  
   return stations;
 }
 

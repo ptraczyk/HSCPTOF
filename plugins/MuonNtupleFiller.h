@@ -72,8 +72,8 @@ private:
 
   double iMass(reco::TrackRef imuon, reco::TrackRef iimuon);
   vector<int> countRPChits(reco::TrackRef muon, const edm::Event& iEvent);
-  vector<int> countDThits(reco::TrackRef muon, const edm::Event& iEvent);
-  vector<int> countCSChits(reco::TrackRef muon, const edm::Event& iEvent);
+  vector<int> countDTsegs(const edm::Event& event, reco::MuonRef muon);
+  vector<int> countCSCsegs(const edm::Event& event, reco::MuonRef muon);
 
   // ----------member data ---------------------------
 
@@ -140,11 +140,12 @@ private:
   unsigned int event_run;
   unsigned int event_lumi;
   unsigned int event_event;
+  int n_vtx;
+  double weight;
   bool isCosmic;
   bool isCollision;
 
 // muon ID
-  bool isPF;
   bool isSTA;
   bool isGLB;
   bool isLoose;
