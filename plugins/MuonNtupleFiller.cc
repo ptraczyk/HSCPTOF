@@ -239,8 +239,8 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
   edm::Handle<reco::TrackCollection> trackc;
   iEvent.getByToken( trackToken_, trackc);
   const reco::TrackCollection trackC = *(trackc.product());
-  if (trackC.size()>2) isCollision=1;
-    else isCollision=0;
+//  if (trackC.size()>2) isCollision=1;
+//    else isCollision=0;
 
   // Generated particle collection
   Handle<GenParticleCollection> genParticles;
@@ -384,7 +384,7 @@ MuonNtupleFiller::analyze(const edm::Event& iEvent, const edm::EventSetup& iSetu
 
         // any L1 match falling inside the cone is saved
         // NEW: tight matching in phi and loose in eta
-        if (dphi<0.05 && deta<0.4) {
+        if (dphi<0.1 && deta<0.4) {
           hasL1=1;
           l1Pt[l1idx]=l1muon->pt();
           l1Eta[l1idx]=l1muon->eta();
@@ -489,7 +489,7 @@ MuonNtupleFiller::beginJob()
 //   t->Branch("genBX", &genBX, "genBX/I");
 
    t->Branch("hasL1", &hasL1, "hasL1/O");
-//   t->Branch("l1Qual", &l1Qual, "l1Qual[10]/I");
+   t->Branch("l1Qual", &l1Qual, "l1Qual[10]/I");
    t->Branch("l1Pt", &l1Pt, "l1Pt[10]/F");
    t->Branch("l1Phi", &l1Phi, "l1Phi[10]/F");
    t->Branch("l1Eta", &l1Eta, "l1Eta[10]/F");
@@ -501,7 +501,7 @@ MuonNtupleFiller::beginJob()
    t->Branch("nVtx", &n_vtx, "n_vtx/i");
 //   t->Branch("weight", &weight, "weight/F");
    t->Branch("isCosmic", &isCosmic, "isCosmic/O");
-   t->Branch("isCollision", &isCollision, "isCollision/O");
+//   t->Branch("isCollision", &isCollision, "isCollision/O");
 
    t->Branch("isSTA", &isSTA, "isSTA/O");
    t->Branch("isGLB", &isGLB, "isGLB/O");
